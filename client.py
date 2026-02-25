@@ -1,330 +1,207 @@
-"""
-client.py - Cliente do Chat Mini-NET
-
-Implementa todas as 4 camadas:
-- Camada 1 (Física): Usa enviar_pela_rede_ruidosa do protocolo.py
-- Camada 2 (Enlace): Quadro com MAC e CRC32
-- Camada 3 (Rede): Pacote com VIP e TTL
-- Camada 4 (Transporte): Segmento com Stop-and-Wait (SEQ/ACK)
-- Camada 5 (Aplicação): Chat JSON
-"""
+# client.py
+# Lógica de rede do cliente Mini-NET.
+# Este módulo é importado pela interface.py, que instancia ClienteMiniNET
+# e expõe seus dados via servidor HTTP.
 
 import socket
-import json
 import threading
-import time
-import sys
-from protocol import (
-    Segmento, Pacote, Quadro,
-    enviar_pela_rede_ruidosa
-)
+import queue
+from protocol import Segmento, Pacote, Quadro, enviar_pela_rede_ruidosa
 
-# ===================== CONFIGURAÇÕES =====================
-# O cliente envia ao ROTEADOR, não diretamente ao servidor
-ROTEADOR_IP = "127.0.0.1"
+# Endereço do roteador — todo tráfego de saída passa por ele
+ROTEADOR_IP    = "127.0.0.1"
 ROTEADOR_PORTA = 6000
 
-# Identificação do cliente
-CLIENTE_IP = "127.0.0.1"
-CLIENTE_PORTA = 5002       # Altere para 5003, 5004, etc. para múltiplos clientes
-CLIENTE_VIP = "HOST_A"     # Altere para HOST_B, HOST_C, etc.
-CLIENTE_MAC = "AA:BB:CC:DD:EE:01"
+BUFFER_SIZE = 65536  # máximo UDP (~65KB), necessário para suportar envio de imagens
+TIMEOUT_ACK = 2.0    # segundos aguardando ACK antes de retransmitir (Stop-and-Wait)
 
-DESTINO_VIP = "SERVIDOR"
-DESTINO_MAC = "AA:BB:CC:DD:EE:02"  # MAC do servidor (simplificado)
+# Códigos ANSI para colorir os logs por camada no terminal
+VERMELHO = "\033[91m"; AMARELO = "\033[93m"; VERDE  = "\033[92m"
+AZUL     = "\033[94m"; MAGENTA = "\033[95m"; RESET  = "\033[0m"
 
-BUFFER_SIZE = 4096
-TIMEOUT_ACK = 2.0  # segundos
-
-# Cores para logs
-VERMELHO = "\033[91m"
-AMARELO = "\033[93m"
-VERDE = "\033[92m"
-AZUL = "\033[94m"
-CIANO = "\033[96m"
-MAGENTA = "\033[95m"
-RESET = "\033[0m"
-
-# ===================== ESTADO DO TRANSPORTE =====================
-seq_envio = 0
-seq_esperado = 0
-lock = threading.Lock()
+def log_fisica(m):     print(f"   {VERMELHO}[FÍSICA]{RESET} {m}")
+def log_enlace(m):     print(f"  {MAGENTA}[ENLACE]{RESET} {m}")
+def log_rede(m):       print(f"  {AZUL}[REDE]{RESET} {m}")
+def log_transporte(m): print(f"  {AMARELO}[TRANSPORTE]{RESET} {m}")
+def log_aplicacao(m):  print(f"  {VERDE}[APLICAÇÃO]{RESET} {m}")
 
 
-def log_fisica(msg):
-    print(f"   {VERMELHO}[FÍSICA]{RESET} {msg}")
-
-def log_enlace(msg):
-    print(f"  {MAGENTA}[ENLACE]{RESET} {msg}")
-
-def log_rede(msg):
-    print(f"  {AZUL}[REDE]{RESET} {msg}")
-
-def log_transporte(msg):
-    print(f"  {AMARELO}[TRANSPORTE]{RESET} {msg}")
-
-def log_aplicacao(msg):
-    print(f"  {VERDE}[APLICAÇÃO]{RESET} {msg}")
-
-
-# =================================================================
-# CAMADA 2 (ENLACE): Envio de quadro com MAC e CRC
-# =================================================================
-def enviar_quadro(sock, dados_pacote_dict, mac_destino, endereco_real):
+class ClienteMiniNET:
     """
-    Encapsula um Pacote (dict) em um Quadro (Enlace),
-    calcula o CRC e envia pela rede ruidosa.
+    Representa um cliente na rede Mini-NET.
+
+    Gerencia as camadas 2 (enlace), 3 (rede) e 4 (transporte) para
+    envio e recebimento de mensagens via UDP com entrega confiável
+    usando Stop-and-Wait com retransmissão.
+
+    Instanciado pela interface.py com VIP, MAC e porta vindos
+    dos argumentos de linha de comando.
     """
-    quadro = Quadro(
-        src_mac=CLIENTE_MAC,
-        dst_mac=mac_destino,
-        pacote_dict=dados_pacote_dict
-    )
-    bytes_quadro = quadro.serializar()
-    log_enlace(f"Quadro serializado ({len(bytes_quadro)} bytes) | "
-               f"SRC_MAC={CLIENTE_MAC} -> DST_MAC={mac_destino}")
-    enviar_pela_rede_ruidosa(sock, bytes_quadro, endereco_real)
 
+    def __init__(self, cliente_vip, cliente_mac, cliente_porta,
+                 destino_vip="SERVIDOR", destino_mac="AA:BB:CC:DD:EE:02"):
+        # Identidade deste cliente na rede
+        self.CLIENTE_VIP   = cliente_vip
+        self.CLIENTE_MAC   = cliente_mac
+        self.CLIENTE_PORTA = cliente_porta
 
-# =================================================================
-# CAMADA 4 (TRANSPORTE): Envio confiável com Stop-and-Wait
-# =================================================================
-def enviar_confiavel(sock, payload_app):
-    """
-    Envia um segmento de dados com Stop-and-Wait.
-    Retransmite até receber ACK com o seq_num correto.
-    """
-    global seq_envio
+        # Destino padrão de toda mensagem enviada (o servidor de chat)
+        self.DESTINO_VIP = destino_vip
+        self.DESTINO_MAC = destino_mac
 
-    segmento = Segmento(seq_num=seq_envio, is_ack=False, payload=payload_app)
-    pacote = Pacote(
-        src_vip=CLIENTE_VIP,
-        dst_vip=DESTINO_VIP,
-        ttl=64,
-        segmento_dict=segmento.to_dict()
-    )
+        # Contadores de sequência Stop-and-Wait (alternam entre 0 e 1)
+        self.seq_envio    = 0  # próximo SEQ a enviar
+        self.seq_esperado = 0  # próximo SEQ esperado ao receber
 
-    max_tentativas = 10
-    tentativa = 0
+        self.lock      = threading.Lock()  # protege seq_envio contra acesso concorrente
+        self.fila_acks = queue.Queue()     # ACKs recebidos → consumidos por enviar_confiavel
 
-    while tentativa < max_tentativas:
-        tentativa += 1
-        log_transporte(f"Enviando segmento SEQ={seq_envio} (tentativa {tentativa})")
+        # Histórico de mensagens lido pela interface.py para exibir no navegador
+        self.mensagens = []
 
-        # Camada 3 -> Camada 2 -> Camada 1
-        # Envia ao roteador (que encaminhará ao servidor)
-        enviar_quadro(sock, pacote.to_dict(), DESTINO_MAC, (ROTEADOR_IP, ROTEADOR_PORTA))
+        # Socket UDP que representa este host na rede simulada
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", self.CLIENTE_PORTA))
 
-        # Aguarda ACK
-        sock.settimeout(TIMEOUT_ACK)
-        try:
-            dados_brutos, addr = sock.recvfrom(BUFFER_SIZE)
+        # Thread de recebimento roda em paralelo para não bloquear o envio
+        threading.Thread(target=self._thread_receber, daemon=True).start()
+        log_aplicacao(f"Cliente {self.CLIENTE_VIP} iniciado na porta {self.CLIENTE_PORTA}")
 
-            # Camada 2: Verifica integridade do quadro
-            quadro_dict, integro = Quadro.deserializar(dados_brutos)
-            if not integro:
-                log_enlace("Quadro de ACK recebido CORROMPIDO! (Erro CRC) -> Descartando.")
-                continue
+    # ------------------------------------------------------------------
+    # CAMADA 2 — Enlace
+    # Empacota o pacote numa Quadro com MACs de origem/destino,
+    # calcula CRC e envia pelo canal ruidoso (protocol.py).
+    # ------------------------------------------------------------------
 
-            log_enlace("Quadro de ACK recebido - CRC OK ✓")
+    def _enviar_quadro(self, dados_pacote_dict, mac_destino, endereco_real):
+        quadro       = Quadro(src_mac=self.CLIENTE_MAC, dst_mac=mac_destino,
+                              pacote_dict=dados_pacote_dict)
+        bytes_quadro = quadro.serializar()
+        log_enlace(f"Quadro ({len(bytes_quadro)}b) | {self.CLIENTE_MAC} -> {mac_destino}")
+        # Passa pelo canal ruidoso definido em protocol.py,
+        # que pode descartar ou corromper o quadro aleatoriamente
+        enviar_pela_rede_ruidosa(self.sock, bytes_quadro, endereco_real)
 
-            # Camada 3: Extrai pacote
-            pacote_recebido = quadro_dict['data']
-            seg_recebido = pacote_recebido['data']
+    # ------------------------------------------------------------------
+    # CAMADA 4 — Transporte (envio)
+    # Implementa Stop-and-Wait: envia um segmento e aguarda ACK.
+    # Retransmite até 10 vezes em caso de timeout ou ACK errado.
+    # msg_idx aponta para self.mensagens para atualizar o status
+    # de entrega exibido pela interface.py no navegador.
+    # ------------------------------------------------------------------
 
-            if seg_recebido.get('is_ack') and seg_recebido.get('seq_num') == seq_envio:
-                log_transporte(f"ACK recebido para SEQ={seq_envio} ✓")
-                seq_envio = 1 - seq_envio  # Alterna 0 <-> 1
-                return True
-            else:
-                log_transporte(f"ACK inesperado (seq={seg_recebido.get('seq_num')}), aguardando...")
+    def enviar_confiavel(self, payload_app, msg_idx=None):
+        with self.lock:
+            seq_atual = self.seq_envio
 
-        except socket.timeout:
-            log_transporte(f"TIMEOUT! ACK não recebido para SEQ={seq_envio}. Retransmitindo...")
+        segmento = Segmento(seq_num=seq_atual, is_ack=False, payload=payload_app)
+        pacote   = Pacote(src_vip=self.CLIENTE_VIP, dst_vip=self.DESTINO_VIP,
+                          ttl=64, segmento_dict=segmento.to_dict())
 
-    log_transporte(f"FALHA: Número máximo de tentativas atingido para SEQ={seq_envio}")
-    return False
+        for tentativa in range(1, 11):
+            log_transporte(f"Enviando SEQ={seq_atual} (tentativa {tentativa})")
+            self._enviar_quadro(pacote.to_dict(), self.DESTINO_MAC,
+                                (ROTEADOR_IP, ROTEADOR_PORTA))
+            try:
+                seg = self.fila_acks.get(timeout=TIMEOUT_ACK)
+                if seg.get('seq_num') == seq_atual:
+                    log_transporte(f"ACK SEQ={seq_atual} ✓")
+                    with self.lock:
+                        self.seq_envio = 1 - self.seq_envio  # alterna 0↔1
+                    if msg_idx is not None:
+                        self.mensagens[msg_idx]['status'] = 'entregue'
+                    return True
+                else:
+                    log_transporte(f"ACK inesperado seq={seg.get('seq_num')}")
+            except queue.Empty:
+                log_transporte(f"TIMEOUT! Retransmitindo SEQ={seq_atual}...")
+                if msg_idx is not None:
+                    self.mensagens[msg_idx]['status'] = 'retransmitindo'
 
+        if msg_idx is not None:
+            self.mensagens[msg_idx]['status'] = 'falha'
+        log_transporte(f"FALHA após 10 tentativas para SEQ={seq_atual}")
+        return False
 
-# =================================================================
-# CAMADA 4 (TRANSPORTE): Envio de ACK
-# =================================================================
-def enviar_ack(sock, seq_num, vip_destino, mac_destino, endereco_real):
-    """Envia um ACK para o remetente."""
-    segmento_ack = Segmento(seq_num=seq_num, is_ack=True, payload={})
-    pacote_ack = Pacote(
-        src_vip=CLIENTE_VIP,
-        dst_vip=vip_destino,
-        ttl=64,
-        segmento_dict=segmento_ack.to_dict()
-    )
-    log_transporte(f"Enviando ACK para SEQ={seq_num}")
-    enviar_quadro(sock, pacote_ack.to_dict(), mac_destino, endereco_real)
+    # ------------------------------------------------------------------
+    # CAMADA 4 — Transporte (ACK)
+    # Confirma ao remetente que o segmento de número seq_num foi recebido.
+    # ------------------------------------------------------------------
 
+    def _enviar_ack(self, seq_num, vip_destino, mac_destino, endereco):
+        seg_ack = Segmento(seq_num=seq_num, is_ack=True, payload={})
+        pkt_ack = Pacote(src_vip=self.CLIENTE_VIP, dst_vip=vip_destino,
+                         ttl=64, segmento_dict=seg_ack.to_dict())
+        log_transporte(f"Enviando ACK SEQ={seq_num}")
+        self._enviar_quadro(pkt_ack.to_dict(), mac_destino, endereco)
 
-# =================================================================
-# THREAD DE RECEBIMENTO
-# =================================================================
-def thread_receber(sock):
-    """Thread que escuta mensagens do servidor."""
-    global seq_esperado
+    # ------------------------------------------------------------------
+    # Thread de recebimento
+    # Roda em paralelo ao envio. Processa cada quadro recebido descendo
+    # pelas camadas 2→3→4→5 e:
+    #   - Se for ACK: deposita em self.fila_acks para enviar_confiavel consumir
+    #   - Se for dado novo: envia ACK e adiciona em self.mensagens
+    #   - Se for duplicata: reenvia ACK sem adicionar (idempotência)
+    # ------------------------------------------------------------------
 
-    while True:
-        try:
-            sock.settimeout(None)
-            dados_brutos, endereco_remetente = sock.recvfrom(BUFFER_SIZE)
-
-            # ========== CAMADA 2: ENLACE ==========
-            quadro_dict, integro = Quadro.deserializar(dados_brutos)
-
-            if not integro:
-                log_enlace("Quadro recebido CORROMPIDO! (Erro CRC) -> Descartando silenciosamente.")
-                log_transporte("Quadro descartado -> O emissor fará retransmissão via timeout.")
-                continue
-
-            log_enlace(f"Quadro recebido de MAC={quadro_dict.get('src_mac', '?')} - CRC OK ✓")
-            mac_remetente = quadro_dict.get('src_mac', 'UNKNOWN')
-
-            # ========== CAMADA 3: REDE ==========
-            pacote_dict = quadro_dict['data']
-            vip_origem = pacote_dict.get('src_vip', '?')
-            vip_destino = pacote_dict.get('dst_vip', '?')
-            ttl = pacote_dict.get('ttl', 0)
-
-            log_rede(f"Pacote de {vip_origem} -> {vip_destino} | TTL={ttl}")
-
-            if ttl <= 0:
-                log_rede("TTL expirado! Pacote descartado.")
-                continue
-
-            if vip_destino != CLIENTE_VIP:
-                log_rede(f"Pacote não é para este host ({CLIENTE_VIP}). Descartando.")
-                continue
-
-            # ========== CAMADA 4: TRANSPORTE ==========
-            segmento_dict = pacote_dict['data']
-            seq_num = segmento_dict.get('seq_num', 0)
-            is_ack = segmento_dict.get('is_ack', False)
-
-            # Se for ACK, ignora (tratado na thread de envio)
-            if is_ack:
-                continue
-
-            log_transporte(f"Segmento recebido: SEQ={seq_num} | Esperado={seq_esperado}")
-
-            if seq_num == seq_esperado:
-                # Pacote correto
-                enviar_ack(sock, seq_num, vip_origem, mac_remetente, endereco_remetente)
-                seq_esperado = 1 - seq_esperado
-
-                # ========== CAMADA 5: APLICAÇÃO ==========
-                payload = segmento_dict.get('payload', {})
-                processar_mensagem_aplicacao(payload, vip_origem)
-            else:
-                # Duplicado
-                log_transporte(f"Segmento DUPLICADO (SEQ={seq_num}). Reenviando ACK anterior.")
-                enviar_ack(sock, seq_num, vip_origem, mac_remetente, endereco_remetente)
-
-        except socket.timeout:
-            continue
-        except Exception as e:
-            log_fisica(f"Erro ao receber dados: {e}")
-
-
-# =================================================================
-# CAMADA 5: APLICAÇÃO
-# =================================================================
-def processar_mensagem_aplicacao(payload, vip_origem):
-    """Processa a mensagem JSON da camada de aplicação."""
-    tipo = payload.get('type', 'unknown')
-    sender = payload.get('sender', vip_origem)
-    mensagem = payload.get('message', '')
-    timestamp = payload.get('timestamp', '')
-
-    if tipo == "MSG":
-        log_aplicacao(f"💬 [{sender}] ({timestamp}): {mensagem}")
-    elif tipo == "JOIN":
-        log_aplicacao(f"🟢 {sender} entrou no chat!")
-    elif tipo == "LEAVE":
-        log_aplicacao(f"🔴 {sender} saiu do chat!")
-    else:
-        log_aplicacao(f"Mensagem recebida de {sender}: {payload}")
-
-
-# =================================================================
-# MAIN
-# =================================================================
-def main():
-    print("=" * 60)
-    print(f"{VERDE}  CLIENTE Mini-NET{RESET}")
-    print(f"  VIP: {CLIENTE_VIP} | MAC: {CLIENTE_MAC}")
-    print(f"  Porta local: {CLIENTE_PORTA}")
-    print(f"  Roteador: {ROTEADOR_IP}:{ROTEADOR_PORTA}")
-    print("=" * 60)
-
-    # Cria socket UDP
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((CLIENTE_IP, CLIENTE_PORTA))
-
-    log_fisica(f"Socket UDP criado e vinculado a {CLIENTE_IP}:{CLIENTE_PORTA}")
-
-    # Inicia thread de recebimento
-    t_receber = threading.Thread(target=thread_receber, args=(sock,), daemon=True)
-    t_receber.start()
-    log_aplicacao("Thread de recebimento iniciada.")
-
-    # Envia mensagem JOIN
-    join_payload = {
-        "type": "JOIN",
-        "sender": CLIENTE_VIP,
-        "message": f"{CLIENTE_VIP} entrou no chat",
-        "timestamp": time.strftime("%H:%M:%S")
-    }
-    log_aplicacao(f"Enviando notificação JOIN...")
-    enviar_confiavel(sock, join_payload)
-
-    # Loop principal: envio de mensagens
-    print(f"\n{CIANO}Digite suas mensagens (ou 'sair' para encerrar):{RESET}\n")
-
-    try:
+    def _thread_receber(self):
         while True:
-            msg = input()
-            if not msg.strip():
-                continue
+            try:
+                dados_brutos, endereco = self.sock.recvfrom(BUFFER_SIZE)
 
-            if msg.strip().lower() == 'sair':
-                # Envia LEAVE
-                leave_payload = {
-                    "type": "LEAVE",
-                    "sender": CLIENTE_VIP,
-                    "message": f"{CLIENTE_VIP} saiu do chat",
-                    "timestamp": time.strftime("%H:%M:%S")
-                }
-                enviar_confiavel(sock, leave_payload)
-                break
+                # Camada 2: verifica integridade pelo CRC
+                quadro_dict, integro = Quadro.deserializar(dados_brutos)
+                if not integro:
+                    log_enlace("Quadro CORROMPIDO! Descartando.")
+                    continue
 
-            timestamp = time.strftime("%H:%M:%S")
-            payload_app = {
-                "type": "MSG",
-                "sender": CLIENTE_VIP,
-                "message": msg,
-                "timestamp": timestamp
-            }
+                mac_remetente = quadro_dict.get('src_mac', 'UNKNOWN')
+                log_enlace(f"Quadro OK ✓ | MAC={mac_remetente}")
 
-            log_aplicacao(f"Preparando envio de mensagem...")
-            sucesso = enviar_confiavel(sock, payload_app)
+                # Camada 3: verifica TTL e se o pacote é para este host
+                pacote_dict = quadro_dict['data']
+                vip_origem  = pacote_dict.get('src_vip', '?')
+                vip_destino = pacote_dict.get('dst_vip', '?')
+                ttl         = pacote_dict.get('ttl', 0)
+                log_rede(f"{vip_origem} -> {vip_destino} | TTL={ttl}")
 
-            if sucesso:
-                log_aplicacao("Mensagem entregue com sucesso ✓")
-            else:
-                log_aplicacao("Falha ao entregar mensagem ✗")
+                if ttl <= 0 or vip_destino != self.CLIENTE_VIP:
+                    log_rede("Pacote descartado (TTL ou destino inválido).")
+                    continue
 
-    except (KeyboardInterrupt, EOFError):
-        pass
+                # Camada 4: distingue ACK de dado
+                seg_dict = pacote_dict['data']
+                seq_num  = seg_dict.get('seq_num', 0)
+                is_ack   = seg_dict.get('is_ack', False)
 
-    print(f"\n{AMARELO}[CLIENTE] Encerrando...{RESET}")
-    sock.close()
+                if is_ack:
+                    # Entrega o ACK para enviar_confiavel que está aguardando
+                    log_transporte(f"ACK SEQ={seq_num} -> fila")
+                    self.fila_acks.put(seg_dict)
+                    continue
 
+                log_transporte(f"Segmento SEQ={seq_num} | Esperado={self.seq_esperado}")
 
-if __name__ == "__main__":
-    main()
+                if seq_num == self.seq_esperado:
+                    self._enviar_ack(seq_num, vip_origem, mac_remetente, endereco)
+                    self.seq_esperado = 1 - self.seq_esperado  # alterna 0↔1
+
+                    # Camada 5: entrega à aplicação — interface.py lê self.mensagens
+                    payload = seg_dict.get('payload', {})
+                    self.mensagens.append({
+                        "sender":    payload.get('sender',    vip_origem),
+                        "message":   payload.get('message',   ''),
+                        "filename":  payload.get('filename',  ''),
+                        "timestamp": payload.get('timestamp', ''),
+                        "type":      payload.get('type',      'MSG'),
+                        "own":       False,
+                        "status":    "entregue"
+                    })
+                    log_aplicacao(f"[{payload.get('sender')}]: {payload.get('message', '📎 imagem')[:60]}")
+                else:
+                    # Duplicata: ACK já foi enviado antes, reenvia para garantir
+                    log_transporte(f"Duplicado SEQ={seq_num}. Reenviando ACK.")
+                    self._enviar_ack(seq_num, vip_origem, mac_remetente, endereco)
+
+            except Exception as e:
+                log_fisica(f"Erro: {e}")

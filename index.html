@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mini-NET Chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #16213e;
+      padding: 14px 24px;
+      border-bottom: 2px solid #0f3460;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Agrupa título + subtítulo de presentes em coluna */
+    #header-info { display: flex; flex-direction: column; gap: 3px; }
+
+    header h1 { font-size: 1.2rem; color: #e94560; }
+
+    /* Subtítulo: lista de quem está online */
+    #online-label {
+      font-size: 0.78rem;
+      color: #888;
+    }
+    #online-label span {
+      color: #4caf50;
+      font-weight: bold;
+    }
+
+    /* VIP do próprio cliente — empurrado para a direita */
+    #vip-label { font-size: 0.85rem; color: #aaa; margin-left: auto; }
+
+    /* Bolinha de status de conexão */
+    #status {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #4caf50;
+      flex-shrink: 0;
+    }
+
+    /* ── Área de mensagens ── */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      max-width: 65%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      font-size: 0.92rem;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .msg.own    { align-self: flex-end;   background: #0f3460;
+                  border-bottom-right-radius: 4px; }
+    .msg.other  { align-self: flex-start; background: #16213e;
+                  border-bottom-left-radius: 4px; }
+    .msg.system { align-self: center; background: transparent;
+                  color: #888; font-size: 0.8rem; font-style: italic; }
+
+    .msg .sender { font-weight: bold; color: #e94560;
+                   font-size: 0.8rem; margin-bottom: 3px; }
+    .msg .time   { font-size: 0.72rem; color: #666;
+                   margin-top: 4px; text-align: right; }
+
+    /* ── Input ── */
+    #input-area {
+      display: flex;
+      padding: 16px;
+      gap: 10px;
+      background: #16213e;
+      border-top: 2px solid #0f3460;
+    }
+
+    #msg-input {
+      flex: 1;
+      padding: 12px 16px;
+      border-radius: 24px;
+      border: 1px solid #0f3460;
+      background: #1a1a2e;
+      color: #eee;
+      font-size: 0.95rem;
+      outline: none;
+    }
+    #msg-input:focus { border-color: #e94560; }
+
+    #send-btn {
+      padding: 12px 24px;
+      border-radius: 24px;
+      border: none;
+      background: #e94560;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #send-btn:hover    { background: #c73652; }
+    #send-btn:disabled { background: #555; cursor: not-allowed; }
+
+    /* ── Botão de anexo ── */
+    #attach-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: #0f3460;
+      cursor: pointer;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    #attach-btn:hover { background: #1a4a80; }
+
+    /* ── Ícones de status de entrega ── */
+    .status {
+      font-size: 0.72rem;
+      margin-left: 4px;
+      display: inline-block;
+      transition: all 0.3s;
+    }
+    .status.enviando       { color: #888; }
+    .status.retransmitindo { color: #f0a500; }
+    .status.entregue       { color: #4caf50; }
+    .status.falha          { color: #e94560; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div id="header-info">
+      <h1>🌐 Mini-NET Chat</h1>
+      <!-- Atualizado por fetchOnline() a cada 3s -->
+      <div id="online-label">conectando...</div>
+    </div>
+    <span id="vip-label">carregando...</span>
+    <div id="status"></div>
+  </header>
+
+  <div id="chat"></div>
+
+  <div id="input-area">
+    <label id="attach-btn" title="Enviar imagem">
+      📎
+      <input type="file" id="file-input" accept="image/*" style="display:none">
+    </label>
+    <input id="msg-input" type="text" placeholder="Digite sua mensagem..." autocomplete="off">
+    <button id="send-btn">Enviar</button>
+  </div>
+
+  <script>
+    let lastCount  = 0;
+    let meuVip     = '';
+
+    // Busca o VIP do próprio cliente (exposto por /info na interface.py)
+    fetch('/info')
+      .then(r => r.json())
+      .then(d => {
+        meuVip = d.vip;
+        document.getElementById('vip-label').textContent = d.vip;
+      });
+
+    // Mapa índice -> elemento DOM do ícone de status
+    const elementosPorIdx = {};
+
+    // ── Subtítulo de presentes ──────────────────────────────────────
+    // Busca /online (exposto pela interface.py) e atualiza o subtítulo.
+    // Formato esperado: { "online": ["HOST_A", "HOST_B"] }
+    async function fetchOnline() {
+      try {
+        const res  = await fetch('/online');
+        const data = await res.json();
+        const lista = data.online || [];
+
+        const label = document.getElementById('online-label');
+        if (lista.length === 0) {
+          label.innerHTML = 'nenhum usuário online';
+        } else {
+          const nomes = lista.map(v => `<span>${v}</span>`).join(', ');
+          const sufixo = lista.length === 1 ? 'online' : 'online';
+          label.innerHTML = `${lista.length} ${sufixo}: ${nomes}`;
+        }
+      } catch(e) {}
+    }
+
+    // ── Renderização de mensagens ───────────────────────────────────
+    function addMessage(msg, idx) {
+      const chat = document.getElementById('chat');
+      const div  = document.createElement('div');
+
+      if (msg.type === 'JOIN' || msg.type === 'LEAVE') {
+        div.className   = 'msg system';
+        div.textContent = msg.type === 'JOIN'
+          ? '🟢 ' + msg.sender + ' entrou no chat'
+          : '🔴 ' + msg.sender + ' saiu do chat';
+
+      } else if (msg.type === 'IMG') {
+        div.className = 'msg ' + (msg.own ? 'own' : 'other');
+
+        const statusIcon = msg.own
+          ? `<span class="status ${msg.status || 'enviando'}" data-idx="${idx}">
+               ${iconeStatus(msg.status)}
+             </span>`
+          : '';
+
+        div.innerHTML =
+          (!msg.own ? `<div class="sender">${msg.sender}</div>` : '') +
+          `<img src="${msg.message}"
+                style="max-width:100%; max-height:300px; border-radius:8px;
+                       display:block; margin-top:4px; cursor:pointer"
+                onclick="window.open(this.src)"
+                title="${msg.filename || 'imagem'}">` +
+          `<div class="time">${msg.timestamp}${statusIcon}</div>`;
+
+        if (msg.own) elementosPorIdx[idx] = div.querySelector('.status');
+
+      } else {
+        div.className = 'msg ' + (msg.own ? 'own' : 'other');
+
+        const statusIcon = msg.own
+          ? `<span class="status ${msg.status || 'enviando'}" data-idx="${idx}">
+               ${iconeStatus(msg.status)}
+             </span>`
+          : '';
+
+        div.innerHTML =
+          (!msg.own ? `<div class="sender">${msg.sender}</div>` : '') +
+          `<div>${msg.message}</div>` +
+          `<div class="time">${msg.timestamp}${statusIcon}</div>`;
+
+        if (msg.own) elementosPorIdx[idx] = div.querySelector('.status');
+      }
+
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function iconeStatus(status) {
+      switch (status) {
+        case 'enviando':       return '🕐';
+        case 'retransmitindo': return '🔄';
+        case 'entregue':       return '✅';
+        case 'falha':          return '❌';
+        default:               return '🕐';
+      }
+    }
+
+    // ── Polling de mensagens ────────────────────────────────────────
+    async function fetchMessages() {
+      try {
+        const res  = await fetch('/messages?since=' + lastCount);
+        const data = await res.json();
+
+        if (data.length > 0) {
+          data.forEach((msg, i) => addMessage(msg, lastCount + i));
+          lastCount += data.length;
+        }
+
+        atualizarStatus();
+      } catch(e) {}
+    }
+
+    // Atualiza ícone de status de mensagens próprias já renderizadas
+    async function atualizarStatus() {
+      try {
+        const res  = await fetch('/messages?since=0');
+        const data = await res.json();
+
+        data.forEach((msg, idx) => {
+          if (!msg.own) return;
+          const el = elementosPorIdx[idx];
+          if (!el || el.dataset.status === msg.status) return;
+
+          el.dataset.status = msg.status;
+          el.className      = `status ${msg.status}`;
+          el.textContent    = iconeStatus(msg.status);
+        });
+      } catch(e) {}
+    }
+
+    // ── Envio de texto ──────────────────────────────────────────────
+    async function sendMessage() {
+      const input = document.getElementById('msg-input');
+      const btn   = document.getElementById('send-btn');
+      const text  = input.value.trim();
+      if (!text) return;
+
+      input.value     = '';
+      btn.disabled    = true;
+      btn.textContent = 'Enviando...';
+
+      try {
+        const res  = await fetch('/send', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        if (data.ok) fetchMessages();
+      } finally {
+        btn.disabled    = false;
+        btn.textContent = 'Enviar';
+        input.focus();
+      }
+    }
+
+    // ── Envio de imagem ─────────────────────────────────────────────
+    document.getElementById('file-input').addEventListener('change', async function () {
+      const file = this.files[0];
+      if (!file) return;
+
+      if (file.size > 40 * 1024) {
+        alert('Imagem muito grande! Máximo 40KB.');
+        this.value = '';
+        return;
+      }
+
+      await sendImage(file);
+      this.value = '';
+    });
+
+    async function comprimirImagem(file, maxWidth = 400, qualidade = 0.7) {
+      return new Promise((resolve) => {
+        const img  = new Image();
+        const url  = URL.createObjectURL(file);
+        img.onload = () => {
+          const canvas  = document.createElement('canvas');
+          const escala  = Math.min(1, maxWidth / img.width);
+          canvas.width  = img.width  * escala;
+          canvas.height = img.height * escala;
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+          resolve(canvas.toDataURL('image/jpeg', qualidade));
+        };
+        img.src = url;
+      });
+    }
+
+    async function sendImage(file) {
+      const btn = document.getElementById('send-btn');
+      btn.disabled    = true;
+      btn.textContent = 'Enviando...';
+
+      try {
+        const base64       = await comprimirImagem(file);
+        const tamanhoBytes = Math.round((base64.length * 3) / 4);
+
+        if (tamanhoBytes > 45 * 1024) {
+          alert('Imagem ainda muito grande após compressão. Tente uma menor.');
+          return;
+        }
+
+        await fetch('/send', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ type: 'IMG', message: base64, filename: file.name })
+        });
+        await fetchMessages();
+      } finally {
+        btn.disabled    = false;
+        btn.textContent = 'Enviar';
+      }
+    }
+
+    // ── Eventos e intervalos ────────────────────────────────────────
+    document.getElementById('send-btn').onclick = sendMessage;
+    document.getElementById('msg-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    setInterval(fetchMessages, 1000);
+    setInterval(fetchOnline,   3000);  // presentes atualizam a cada 3s
+    fetchMessages();
+    fetchOnline();
+  </script>
+
+</body>
+</html>
