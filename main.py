@@ -5,6 +5,11 @@ import time
 import signal
 import threading
 
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+
 HOSTS = [
     ("HOST_A", "AA:BB:CC:DD:EE:01", 5002, 8080),
     ("HOST_B", "AA:BB:CC:DD:EE:03", 5003, 8081),

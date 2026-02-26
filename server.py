@@ -8,6 +8,11 @@ import threading
 import queue
 from protocol import Segmento, Pacote, Quadro, enviar_pela_rede_ruidosa
 
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+
 SERVIDOR_IP    = "127.0.0.1"
 SERVIDOR_PORTA = 5001
 SERVIDOR_VIP   = "SERVIDOR"
