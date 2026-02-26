@@ -106,7 +106,7 @@ def enviar_confiavel(sock, payload_app, vip_destino, endereco_real, seq_num):
                       ttl=64, segmento_dict=segmento.to_dict())
 
     try:
-        for tentativa in range(1, 11):
+        for tentativa in range(1, 21):
             log_transporte(f"Enviando SEQ={seq_num} -> {vip_destino} (tentativa {tentativa})")
             enviar_quadro(sock, pacote.to_dict(), mac_destino, endereco_real)
 

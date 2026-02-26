@@ -98,7 +98,7 @@ class ClienteMiniNET:
         pacote   = Pacote(src_vip=self.CLIENTE_VIP, dst_vip=self.DESTINO_VIP,
                           ttl=64, segmento_dict=segmento.to_dict())
 
-        for tentativa in range(1, 11):
+        for tentativa in range(1, 21):
             log_transporte(f"Enviando SEQ={seq_atual} (tentativa {tentativa})")
             self._enviar_quadro(pacote.to_dict(), self.DESTINO_MAC,
                                 (ROTEADOR_IP, ROTEADOR_PORTA))
