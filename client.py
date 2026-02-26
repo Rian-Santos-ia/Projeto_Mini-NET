@@ -8,10 +8,7 @@ import threading
 import queue
 from protocol import Segmento, Pacote, Quadro, enviar_pela_rede_ruidosa
 
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
+from compat import CHECK, CHECKDBL, CROSS, CLOCK, RELOAD, GREEN, RED
 
 # Endereço do roteador — todo tráfego de saída passa por ele
 ROTEADOR_IP    = "127.0.0.1"
@@ -110,7 +107,7 @@ class ClienteMiniNET:
             try:
                 seg = self.fila_acks.get(timeout=TIMEOUT_ACK)
                 if seg.get('seq_num') == seq_atual:
-                    log_transporte(f"ACK SEQ={seq_atual} ✓")
+                    log_transporte(f"ACK SEQ={seq_atual} {CHECK}")
                     with self.lock:
                         self.seq_envio = 1 - self.seq_envio  # alterna 0↔1
                     if msg_idx is not None:
@@ -161,7 +158,7 @@ class ClienteMiniNET:
                     continue
 
                 mac_remetente = quadro_dict.get('src_mac', 'UNKNOWN')
-                log_enlace(f"Quadro OK ✓ | MAC={mac_remetente}")
+                log_enlace(f"Quadro OK {CHECK} | MAC={mac_remetente}")
 
                 # Camada 3: verifica TTL e se o pacote é para este host
                 pacote_dict = quadro_dict['data']

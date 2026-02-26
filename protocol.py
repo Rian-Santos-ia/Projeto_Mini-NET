@@ -7,9 +7,6 @@ Ele contém:
 2. Funções de utilidade para cálculo de CRC (Integridade).
 3. O simulador de canal físico (perda e corrupção de pacotes).
 """
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 import json
 import zlib

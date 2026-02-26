@@ -8,10 +8,7 @@ import threading
 import queue
 from protocol import Segmento, Pacote, Quadro, enviar_pela_rede_ruidosa
 
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
+from compat import CHECK, CHECKDBL, CROSS, CLOCK, RELOAD, GREEN, RED
 
 SERVIDOR_IP    = "127.0.0.1"
 SERVIDOR_PORTA = 5001
@@ -118,7 +115,7 @@ def enviar_confiavel(sock, payload_app, vip_destino, endereco_real, seq_num):
             try:
                 seg = fila_local.get(timeout=TIMEOUT_ACK)
                 if seg.get('is_ack') and seg.get('seq_num') == seq_num:
-                    log_transporte(f"ACK SEQ={seq_num} de {vip_destino} ✓")
+                    log_transporte(f"ACK SEQ={seq_num} de {vip_destino} {CHECK}")
                     return True
             except queue.Empty:
                 log_transporte(f"TIMEOUT SEQ={seq_num} -> {vip_destino}. Retransmitindo...")
@@ -162,7 +159,7 @@ def retransmitir_para_clientes(sock, payload, vip_origem):
             with lock_cl:
                 clientes[vip_destino]["seq_envio"] = 1 - seq
 
-        log_aplicacao(f"{'✓ Entregue' if ok else '✗ Falha'} para {vip_destino}")
+        log_aplicacao(f"{CHECKDBL+' Entregue' if ok else CROSS+' Falha'} para {vip_destino}")
 
 
 def processar_mensagem_aplicacao(sock, payload, vip_origem):
@@ -171,13 +168,13 @@ def processar_mensagem_aplicacao(sock, payload, vip_origem):
     ts     = payload.get('timestamp', '')
 
     if tipo == "MSG":
-        log_aplicacao(f"💬 [{sender}] ({ts}): {payload.get('message', '')[:60]}")
+        log_aplicacao(f"[MSG] [{sender}] ({ts}): {payload.get('message', '')[:60]}")
     elif tipo == "IMG":
-        log_aplicacao(f"🖼  [{sender}] ({ts}): imagem recebida")
+        log_aplicacao(f"[IMG]  [{sender}] ({ts}): imagem recebida")
     elif tipo == "JOIN":
-        log_aplicacao(f"🟢 {sender} entrou no chat!")
+        log_aplicacao(f"{GREEN} {sender} entrou no chat!")
     elif tipo == "LEAVE":
-        log_aplicacao(f"🔴 {sender} saiu do chat!")
+        log_aplicacao(f"{RED} {sender} saiu do chat!")
 
     # Broadcast em thread separada — libera thread_receber imediatamente
     threading.Thread(
@@ -209,7 +206,7 @@ def thread_receber(sock):
                 continue
 
             # MAC de origem ignorado — é sempre o do roteador após encaminhamento
-            log_enlace("Quadro OK ✓")
+            log_enlace(f"Quadro OK {CHECK}")
 
             # Camada 3
             pacote_dict = quadro_dict['data']

@@ -10,9 +10,7 @@
 import socket
 from protocol import Quadro, enviar_pela_rede_ruidosa
 
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+from compat import CHECK, CHECKDBL, CROSS, CLOCK, RELOAD, GREEN, RED
 
 
 ROTEADOR_IP    = "127.0.0.1"
@@ -68,7 +66,7 @@ def rotear(sock):
                 log_rede("Pacote não será roteado (quadro inválido).")
                 continue
 
-            log_enlace(f"Quadro íntegro - CRC OK ✓ | "
+            log_enlace(f"Quadro íntegro - CRC OK {CHECK} | "
                        f"SRC_MAC={quadro_dict.get('src_mac','?')} -> "
                        f"DST_MAC={quadro_dict.get('dst_mac','?')}")
 
@@ -105,7 +103,7 @@ def rotear(sock):
             log_roteador(f"Encaminhando para {endereco_destino}...")
             enviar_pela_rede_ruidosa(sock, bytes_encaminhar, endereco_destino)
 
-            log_roteador(f"Pacote roteado: {vip_origem} -> {vip_destino} ✓")
+            log_roteador(f"Pacote roteado: {vip_origem} -> {vip_destino} {CHECK}")
             print("-" * 50)
 
         except Exception as e:
