@@ -13,7 +13,7 @@ ROTEADOR_IP    = "127.0.0.1"
 ROTEADOR_PORTA = 6000
 
 BUFFER_SIZE = 65536  # máximo UDP (~65KB), necessário para suportar envio de imagens
-TIMEOUT_ACK = 2.0    # segundos aguardando ACK antes de retransmitir (Stop-and-Wait)
+TIMEOUT_ACK = 3.0    # segundos aguardando ACK antes de retransmitir (Stop-and-Wait)
 
 # Códigos ANSI para colorir os logs por camada no terminal
 VERMELHO = "\033[91m"; AMARELO = "\033[93m"; VERDE  = "\033[92m"
@@ -175,9 +175,10 @@ class ClienteMiniNET:
                 is_ack   = seg_dict.get('is_ack', False)
 
                 if is_ack:
-                    # Entrega o ACK para enviar_confiavel que está aguardando
-                    log_transporte(f"ACK SEQ={seq_num} -> fila")
-                    self.fila_acks.put(seg_dict)
+                    # Só deposita na fila se o SEQ for relevante (0 ou 1)
+                    if seg_dict.get('seq_num') in (0, 1):
+                        log_transporte(f"ACK SEQ={seq_num} -> fila")
+                        self.fila_acks.put(seg_dict)
                     continue
 
                 log_transporte(f"Segmento SEQ={seq_num} | Esperado={self.seq_esperado}")
