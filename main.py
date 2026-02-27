@@ -40,13 +40,15 @@ def redirecionar_saida(processo, nome):
 def iniciar(nome, cmd):
     # -u força o Python filho a não fazer buffer no stdout
     cmd_sem_buffer = [cmd[0], "-u"] + cmd[1:]
-    
+
     p = subprocess.Popen(
         cmd_sem_buffer,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=0                   # sem buffer no lado do pai também
+        bufsize=1,                  # 1 significa "line buffered" (ideal para text=True)
+        encoding='utf-8',           # Força a leitura em UTF-8
+        errors='replace'            # Substitui caracteres problemáticos por '?' em vez de travar
     )
     processos.append((nome, p))
     threading.Thread(target=redirecionar_saida, args=(p, nome), daemon=True).start()
