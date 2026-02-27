@@ -8,6 +8,14 @@ O sistema opera sobre um **canal propositalmente defeituoso** (com perda de paco
 
 ---
 
+## Alunos
+
+Caio Lucca dos Santos Oliveira - 202403896
+
+Rian de Souza Santos - 202403923
+
+---
+
 ## Como Executar
 
 ### Pré-requisitos
