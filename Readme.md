@@ -34,6 +34,12 @@ Abra cada endereço em uma aba diferente para simular os dois participantes do c
 
 ---
 
+# Vídeo
+
+O vídeo de demonstração está disponível nesse [link](https://drive.google.com/drive/folders/1avFgB1uCh81HbiZ4BBKPHUTwPl7npq4z?usp=sharing).
+
+---
+
 ## Arquitetura
 
 ```
