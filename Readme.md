@@ -14,6 +14,8 @@ Caio Lucca dos Santos Oliveira - 202403896
 
 Rian de Souza Santos - 202403923
 
+O vídeo de demonstração está disponível nesse [link](https://drive.google.com/drive/folders/1avFgB1uCh81HbiZ4BBKPHUTwPl7npq4z?usp=sharing).
+
 ---
 
 ## Como Executar
@@ -39,12 +41,6 @@ HOST_B -> http://127.0.0.1:8081
 ```
 
 Abra cada endereço em uma aba diferente para simular os dois participantes do chat.
-
----
-
-# Vídeo
-
-O vídeo de demonstração está disponível nesse [link](https://drive.google.com/drive/folders/1avFgB1uCh81HbiZ4BBKPHUTwPl7npq4z?usp=sharing).
 
 ---
 
